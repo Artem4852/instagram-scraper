@@ -55,7 +55,7 @@ class UserScraper():
         """
         Load the data that was already loaded to avoid loading the same images/videos multiple 
         times"""
-        if not os.path.exists(f'{self.username}/loaded.json'): 
+        if not os.path.exists(f'{self.parent_path}/{self.username}/loaded.json'): 
             return {'posts': [], 'stories': [], 'highlights': []}
         with open(f'{self.parent_path}/{self.username}/loaded.json', 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -74,19 +74,37 @@ class UserScraper():
         os.makedirs(f'{self.parent_path}/{self.username}/posts', exist_ok=True)
         os.makedirs(f'{self.parent_path}/{self.username}/stories', exist_ok=True)
         os.makedirs(f'{self.parent_path}/{self.username}/highlights', exist_ok=True)
+        os.makedirs(f'{self.parent_path}/{self.username}/followers', exist_ok=True)
+        os.makedirs(f'{self.parent_path}/{self.username}/following', exist_ok=True)
 
     def save_json(self, data: dict, filename: str) -> None:
         """
         Save JSON data to a file"""
+        now = datetime.now().strftime('%Y-%m-%d %Hh%Mm%Ss')
         parent_path = os.path.dirname(f"{self.parent_path}/{self.username}/{filename}")
         os.makedirs(parent_path, exist_ok=True)
-        with open(f"{self.parent_path}/{self.username}/{filename}", 'w', encoding='utf-8') as f:
+        with open(f"{self.parent_path}/{self.username}/{filename}_{now}.json", 'w', encoding='utf-8') as f:
             json.dump(data, f)
+
+    def find_latest_json(self, filename: str) -> str:
+        """
+        Find the latest JSON file in a directory
+        
+        Parameters:
+        filename (str): Name of the file to search for"""
+        files = os.listdir(f"{self.parent_path}/{self.username}/{'/'.join(filename.split('/')[:-1])}")
+        files = [f for f in files if f.startswith(filename.split('/')[-1])]
+        files.sort()
+        if not files: return None
+        if len(filename.split('/')) == 1: return files[-1].replace('.json', '')
+        return f"{'/'.join(filename.split('/')[:-1])}/{files[-1]}".replace('.json', '')
 
     def load_json(self, filename: str) -> dict:
         """
         Load JSON data from a file"""
-        with open(f"{self.parent_path}/{self.username}/{filename}", 'r', encoding='utf-8') as f:
+        print(1)
+        print(self.find_latest_json(filename))
+        with open(f"{self.parent_path}/{self.username}/{self.find_latest_json(filename)}.json", 'r', encoding='utf-8') as f:
             return json.load(f)
 
     def download_media(self, url: str, filename: str) -> None:
@@ -106,7 +124,10 @@ class UserScraper():
         
         Parameters:
         filename (str): Name of the file to check"""
-        return os.path.exists(f"{self.parent_path}/{self.username}/{filename}")
+        directory = f"{self.parent_path}/{self.username}/{'/'.join(filename.split('/')[:-1])}"
+        files = os.listdir(directory)
+        files = [f for f in files if f.startswith(filename.split('/')[-1])]
+        return any(files)
 
     def add_directory(self, path) -> None:
         """
@@ -136,7 +157,7 @@ class UserScraper():
 
         if self.debug: 
             print(f"Getting user ID for {username}")
-        filename = 'user_info_basic.json'
+        filename = 'user_info_basic'
 
         # Getting data - either from API or from disk
         data = self.get_data(filename, update, 'get_user_info', username)
@@ -155,8 +176,6 @@ class UserScraper():
         data = self.random_api().get_user_info_by_id(user_id)
 
         self.username = data['user']['username']
-        if self.save:
-            self.save_json(data, "user_info.json")
 
         return data['user']['username']
 
@@ -172,7 +191,7 @@ class UserScraper():
         if self.debug:
             print(f"Getting user info for user {self.username}")
 
-        filename = 'user_info.json'
+        filename = 'user_info'
         data = self.get_data(filename, update, 'get_user_info_by_id', user_id)
         return data['user']
 
@@ -222,7 +241,7 @@ class UserScraper():
             limit = 999999
 
         # Loading data for the first page from the API or from disk
-        filename = 'posts/posts_0.json'
+        filename = 'posts/posts_0'
         data = self.get_data(filename, update, 'get_user_media', self.user_id, 50)
 
         posts = data['items']
@@ -231,7 +250,7 @@ class UserScraper():
         page = 1
         while data['more_available'] and len(posts) < limit:
             # Loading data for the next page from the API or from disk
-            filename = f'posts/posts_{page}.json'
+            filename = f'posts/posts_{page}'
             data = self.get_data(filename, update, 'get_user_media', self.user_id, 50, data['next_max_id'])
             posts += data['items']
             page += 1
@@ -260,7 +279,8 @@ class UserScraper():
                 break
             date = datetime.fromtimestamp(post['taken_at']).strftime('%Y-%m-%d %Hh%Mm%Ss')
             self.add_directory(f'posts/post_{date}')
-            self.save_json({'data': post}, f'posts/post_{date}/data.json')
+            if self.save and not self.data_exists(f'posts/post_{date}/data'):
+                self.save_json({'data': post}, f'posts/post_{date}/data')
 
             # Loading every image/video in the post
             if 'carousel_media' in post:
@@ -298,8 +318,6 @@ class UserScraper():
 
         # Getting stories data from the API
         data = self.random_api().get_user_stories(self.user_id)
-        if self.save:
-            self.save_json(data, f'{self.parent_path}/user_stories.json')
         return data['reels'][str(self.user_id)]['items']
 
     def download_user_stories(self, stories=None) -> None:
@@ -316,8 +334,6 @@ class UserScraper():
         if self.debug:
             print(f"Downloading user stories for user {self.username}")
 
-        if self.save:
-            self.save_json(stories, 'stories.json')
         for story in stories:
             # Skipping if the story was already loaded
             if story['id'] in self.loaded['stories']:
@@ -346,13 +362,13 @@ class UserScraper():
             print(f"Getting user highlights for user {self.username}")
 
         # Loading highlights data from the API or from disk
-        filename = 'highlights.json'
+        filename = 'highlights'
         data = self.get_data(filename, update, 'get_user_highlights', self.user_id)
         highlights = [{'title': h['node']['title'], 'id': h['node']['id']} for h in data['data']['user']['edge_highlight_reels']['edges']]
 
         # Getting stories data for each highlight
         for highlight in highlights:
-            filename = f'highlights/{highlight["title"]}.json'
+            filename = f'highlights/{highlight["title"]}'
             data = self.get_data(filename, update, 'get_highlight_stories', highlight['id'])
             highlight['items'] = data['reels'][f'highlight:{highlight["id"]}']['items']
         return highlights
@@ -373,13 +389,11 @@ class UserScraper():
         if self.debug:
             print(f"Downloading user highlights for user {self.username}")
 
-        if self.save:
-            self.save_json(highlights, 'highlights.json')
-
         # Downloading every story in every highlight
         for highlight in highlights:
             self.add_directory(f'highlights/{highlight["title"]}')
-            self.save_json({'data': highlight}, f'highlights/{highlight["title"]}/data.json')
+            if self.save and not self.data_exists(f'highlights/{highlight["title"]}/data'):
+                self.save_json({'data': highlight}, f'highlights/{highlight["title"]}/data')
             for story in highlight['items']:
                 # Skipping if the story was already loaded
                 if story['id'] in self.loaded['highlights']:
@@ -395,9 +409,106 @@ class UserScraper():
                 # Adding the story to the loaded list
                 self.loaded['highlights'].append(story['id'])
 
+    def get_user_followers(self, limit=None, update=False) -> dict:
+        """
+        Get user followers
+        
+        Parameters:
+        update (bool): Whether to update the data if it already exists. If False, 
+        loads the data from disk"""
+
+        if self.debug:
+            print(f"Getting user followers for user {self.username}")
+
+        if not limit:
+            limit = 999_999_999_999
+
+        filename = 'followers/followers_0'
+        data = self.get_data(filename, update, 'get_user_followers', self.user_id, 100)
+
+        users = data['users']
+        page = 1
+        while 'next_max_id' in data and len(users) < limit:
+            filename = f'followers/followers_{page}'
+            data = self.get_data(filename, update, 'get_user_followers', self.user_id, 100, data['next_max_id'])
+
+            users += data['users']
+            page += 1
+        return users
+    
+    def download_user_followers(self, followers=None, limit=None, update=False) -> None:
+        """
+        Download user followers to disk
+        
+        Parameters:
+        followers (list): User followers data. If not provided, gets the data from the API
+        limit (int): Maximum number of followers to download. If not provided, downloads all followers
+        update (bool): Whether to update the data if it already exists. If False, 
+        loads the data from disk"""
+
+        if not followers:
+            followers = self.get_user_followers(limit, update=update)
+
+        if self.debug:
+            print(f"Downloading user followers for user {self.username}")
+
+        if self.save and (update or not self.data_exists('followers/followers_full')):
+            self.save_json({'users': followers}, 'followers/followers_full')
+            self.save_json({'users': [{
+                'username': user['username'],
+                'id': user['pk']
+            } for user in followers]}, 'followers/followers_short')
+
+    def get_user_following(self, limit=None, update=False) -> dict:
+        """
+        Get user following
+        
+        Parameters:
+        update (bool): Whether to update the data if it already exists. If False, 
+        loads the data from disk"""
+
+        if self.debug:
+            print(f"Getting user following for user {self.username}")
+
+        if not limit:
+            limit = 999_999_999_999
+
+        filename = 'following/following_0'
+        data = self.get_data(filename, update, 'get_user_following', self.user_id, 200)
+
+        users = data['users']
+        page = 1
+        while 'next_max_id' in data and len(users) < limit:
+            filename = f'following/following_{page}'
+            data = self.get_data(filename, update, 'get_user_following', self.user_id, 200, data['next_max_id'])
+
+            users += data['users']
+            page += 1
+        return users
+    
+    def download_user_following(self, following=None, limit=None, update=False) -> None:
+        """
+        Download user following to disk
+        
+        Parameters:
+        following (list): User following data. If not provided, gets the data from the API
+        limit (int): Maximum number of following to download. If not provided, downloads all following
+        update (bool): Whether to update the data if it already exists. If False, 
+        loads the data from disk"""
+
+        if not following:
+            following = self.get_user_following(limit, update=update)
+
+        if self.debug:
+            print(f"Downloading user following for user {self.username}")
+
+        if self.save and (update or not self.data_exists('following/following_full')):
+            self.save_json({'users': following}, 'following/following_full')
+            self.save_json({'users': [{
+                'username': user['username'],
+                'id': user['pk']
+            } for user in following]}, 'following/following_short')
+
 if __name__ == '__main__':
-    scraper = UserScraper('starthackclub', True, True, "/Users/artem4852/Desktop")
-    scraper.download_user_info()
-    scraper.download_user_posts(limit=10)
+    scraper = UserScraper('starthackclub', True, True)
     scraper.download_user_stories()
-    scraper.download_user_highlights()
