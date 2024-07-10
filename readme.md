@@ -132,7 +132,6 @@ The Instagram scraper creates a folder structure to organize the downloaded data
 │   │   ├── 0.jpg
 │   │   ├── 1.mp4
 │   │   ├── ...
-│   │   ├── caption.txt
 │   │   └── data_[timestamp].json
 │   └── ...
 ├── stories/
@@ -154,7 +153,6 @@ The Instagram scraper creates a folder structure to organize the downloaded data
 │   ├── following_full_[timestamp].json
 │   └── following_short_[timestamp].json
 ├── user_info_[timestamp].json
-├── user_info.txt
 ├── propic.jpg
 └── loaded.json
 ```
