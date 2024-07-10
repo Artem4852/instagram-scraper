@@ -22,12 +22,15 @@ class UserScraper():
     def __init__(self, user: str | int, save=True, debug=False, parent_path=None) -> None:
         # Creating multiple API instances to avoid rate limits
         self.tokens = tokens
-        self.apis = [InstagramAPI(token) for token in self.tokens]
+        left = self.get_calls_left()
+        self.apis = [InstagramAPI(token) for n, token in enumerate(self.tokens) if left[n] > 5]
 
         # Setting up the scraper
         self.parent_path = parent_path if parent_path else "."
         self.save = save
         self.debug = debug
+
+        self.is_private = False
 
         # Getting user ID and username
         if type(user) == str and not user.isdigit():
@@ -50,6 +53,19 @@ class UserScraper():
         """
         Return a random API instance to avoid rate limits"""
         return random.choice(self.apis)
+
+    def get_calls_left(self) -> list:
+        """
+        Get the number of calls left for each API instance"""
+        left = []
+        for token in self.tokens:
+            r = requests.get("https://v1.rocketapi.io/usage", headers={"Content-Type": "application/json", "Authorization": f"Token {token}"})
+            calls_left = r.json()['limit'] - r.json()['requests']
+            if calls_left < 5:
+                print(f"Token {token} has {calls_left} call(s) left. Replace it.")
+            left.append(calls_left)
+
+        return left
 
     def load_loaded(self) -> dict:
         """
@@ -167,7 +183,8 @@ class UserScraper():
         filename = 'basic_user_info'
 
         # Getting data - either from API or from disk
-        data = self.get_data(filename, update, 'get_user_info', username)
+        data = self.get_data(filename, update, 'get_user_info', username) 
+        self.is_private = data['data']['user']['is_private']
         return int(data['data']['user']['id'])
 
     def get_username(self, user_id: int) -> str:
@@ -183,6 +200,7 @@ class UserScraper():
         data = self.random_api().get_user_info_by_id(user_id)
 
         self.username = data['user']['username']
+        self.is_private = data['user']['is_private']
 
         return data['user']['username']
 
@@ -219,16 +237,16 @@ class UserScraper():
             user_info = self.get_user_info(self.user_id, update=update)
 
         # Writing basic user info to a file
-        with open(f'{self.parent_path}/{self.username}/user_info.txt', "w", encoding='utf-8') as f:
-            f.write(f"Username: {user_info['username']}\n")
-            f.write(f"User ID: {user_info['pk']}\n")
-            f.write(f"Full Name: {user_info['full_name']}\n")
-            f.write(f"Biography: {user_info['biography']}\n")
-            f.write(f"Followers: {user_info['follower_count']}\n")
-            f.write(f"Following: {user_info['following_count']}\n")
-            f.write(f"Posts: {user_info['media_count']}\n")
+        # with open(f'{self.parent_path}/{self.username}/user_info.txt', "w", encoding='utf-8') as f:
+        #     f.write(f"Username: {user_info['username']}\n")
+        #     f.write(f"User ID: {user_info['pk']}\n")
+        #     f.write(f"Full Name: {user_info['full_name']}\n")
+        #     f.write(f"Biography: {user_info['biography']}\n")
+        #     f.write(f"Followers: {user_info['follower_count']}\n")
+        #     f.write(f"Following: {user_info['following_count']}\n")
+        #     f.write(f"Posts: {user_info['media_count']}\n")
 
-        self.save_json({
+        if update: self.save_json({
             'username': user_info['username'],
             'user_id': user_info['pk'],
             'full_name': user_info['full_name'],
@@ -299,8 +317,6 @@ class UserScraper():
                 break
             date = datetime.fromtimestamp(post['taken_at']).strftime('%Y-%m-%d %Hh%Mm%Ss')
             self.add_directory(f'posts/post_{date}')
-            if self.save and not self.data_exists(f'posts/post_{date}/data'):
-                self.save_json({'data': post}, f'posts/post_{date}/data')
 
             # Loading every image/video in the post
             if 'carousel_media' in post:
@@ -319,10 +335,10 @@ class UserScraper():
                 self.loaded['posts'].append(image['id'])
                 self.save_loaded()
 
-            if not update: continue
+            if not (update or not self.data_exists(f'posts/post_{date}/data')): continue
 
             # Saving additional data
-            self.save_json({
+            if update or not self.data_exists(f'posts/post_{date}/data'): self.save_json({
                 'taken_at': post['taken_at'],
                 'id': post['id'],
                 'caption': post['caption']['text'] if 'caption' in post and 'text' in post['caption'] else None,
@@ -334,14 +350,14 @@ class UserScraper():
             }, f'posts/post_{date}/data')
 
             # Loading the caption if it exists
-            if not 'caption' in post:
-                continue
-            if not post['caption']:
-                continue
-            if not 'text' in post['caption']:
-                continue
-            with open(f'{self.parent_path}/{self.username}/posts/post_{date}/caption.txt', 'w', encoding='utf-8') as f:
-                f.write(post['caption']['text'])
+            # if not 'caption' in post:
+            #     continue
+            # if not post['caption']:
+            #     continue
+            # if not 'text' in post['caption']:
+            #     continue
+            # with open(f'{self.parent_path}/{self.username}/posts/post_{date}/caption.txt', 'w', encoding='utf-8') as f:
+            #     f.write(post['caption']['text'])
 
     def get_user_stories(self) -> list:
         """
@@ -434,7 +450,7 @@ class UserScraper():
         # Downloading every story in every highlight
         for highlight in highlights:
             self.add_directory(f'highlights/{highlight["title"]}')
-            if self.save and not self.data_exists(f'highlights/{highlight["title"]}/data'):
+            if self.save and (update or not self.data_exists(f'highlights/{highlight["title"]}/data')):
                 self.save_json({
                     'title': highlight['title'],
                     'id': highlight['id'],
@@ -450,7 +466,7 @@ class UserScraper():
                     continue
 
                 # Downloading the story
-                date = datetime.fromtimestamp(story['taken_at']).strftime('%Y-%m-%d %HH%MM%SS')
+                date = datetime.fromtimestamp(story['taken_at']).strftime('%Y-%m-%d %Hh%MMmSs')
                 if 'video_versions' in story:
                     self.download_media(story['video_versions'][0]['url'], f'highlights/{highlight["title"]}/story_{date}.mp4')
                 else:
