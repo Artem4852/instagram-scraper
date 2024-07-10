@@ -8,7 +8,7 @@ from rocketapi import InstagramAPI
 
 dotenv.load_dotenv()
 
-tokens = os.getenv('tokens').split(',')
+tokens = str(os.getenv('tokens')).split(',')
 
 class UserScraper():
     """
@@ -30,12 +30,14 @@ class UserScraper():
         self.debug = debug
 
         # Getting user ID and username
-        try:
+        if type(user) == str and not user.isdigit():
+            self.username = user
+            self.setup_directories()
+            self.user_id = self.get_user_id(self.username)
+        else:
             self.user_id = int(user)
             self.username = self.get_username(self.user_id)
-        except ValueError:
-            self.username = user
-            self.user_id = self.get_user_id(self.username)
+            self.setup_directories()
 
         # Additional setup
         self.headers = {
@@ -43,8 +45,6 @@ class UserScraper():
         }
 
         self.loaded = self.load_loaded()
-
-        self.setup_directories()
 
     def random_api(self) -> InstagramAPI:
         """
@@ -71,6 +71,7 @@ class UserScraper():
         """
         Setup directories for the user. Creates directories for posts, stories, and highlights."""
         os.makedirs(f'{self.parent_path}/{self.username}', exist_ok=True)
+        os.makedirs(f'{self.parent_path}/{self.username}/raw', exist_ok=True)
         os.makedirs(f'{self.parent_path}/{self.username}/posts', exist_ok=True)
         os.makedirs(f'{self.parent_path}/{self.username}/stories', exist_ok=True)
         os.makedirs(f'{self.parent_path}/{self.username}/highlights', exist_ok=True)
@@ -79,14 +80,18 @@ class UserScraper():
 
     def save_json(self, data: dict, filename: str) -> None:
         """
-        Save JSON data to a file"""
+        Save JSON data to a file
+        
+        Parameters:
+        data (dict): Data to save
+        filename (str): Name of the file to save the data to"""
         now = datetime.now().strftime('%Y-%m-%d %Hh%Mm%Ss')
         parent_path = os.path.dirname(f"{self.parent_path}/{self.username}/{filename}")
         os.makedirs(parent_path, exist_ok=True)
         with open(f"{self.parent_path}/{self.username}/{filename}_{now}.json", 'w', encoding='utf-8') as f:
             json.dump(data, f)
 
-    def find_latest_json(self, filename: str) -> str:
+    def find_latest_json(self, filename: str) -> str | None:
         """
         Find the latest JSON file in a directory
         
@@ -97,13 +102,11 @@ class UserScraper():
         files.sort()
         if not files: return None
         if len(filename.split('/')) == 1: return files[-1].replace('.json', '')
-        return f"{'/'.join(filename.split('/')[:-1])}/{files[-1]}".replace('.json', '')
+        return os.path.join(*filename.split('/')[:-1], files[-1]).replace('.json', '')
 
     def load_json(self, filename: str) -> dict:
         """
         Load JSON data from a file"""
-        print(1)
-        print(self.find_latest_json(filename))
         with open(f"{self.parent_path}/{self.username}/{self.find_latest_json(filename)}.json", 'r', encoding='utf-8') as f:
             return json.load(f)
 
@@ -125,6 +128,9 @@ class UserScraper():
         Parameters:
         filename (str): Name of the file to check"""
         directory = f"{self.parent_path}/{self.username}/{'/'.join(filename.split('/')[:-1])}"
+        if not os.path.exists(directory): 
+            os.makedirs(directory, exist_ok=True)
+            return False
         files = os.listdir(directory)
         files = [f for f in files if f.startswith(filename.split('/')[-1])]
         return any(files)
@@ -137,7 +143,8 @@ class UserScraper():
         path (str): Path to add"""
         os.makedirs(f"{self.parent_path}/{self.username}/{path}", exist_ok=True)
 
-    def get_data(self, filename: str, update: bool, method: str, *args, **kwargs) -> None:
+    def get_data(self, filename: str, update: bool, method: str, *args, **kwargs) -> dict:
+        filename = 'raw/'+filename
         if update or not self.data_exists(filename):
             data = getattr(self.random_api(), method)(*args, **kwargs)
             if self.save:
@@ -157,7 +164,7 @@ class UserScraper():
 
         if self.debug: 
             print(f"Getting user ID for {username}")
-        filename = 'user_info_basic'
+        filename = 'basic_user_info'
 
         # Getting data - either from API or from disk
         data = self.get_data(filename, update, 'get_user_info', username)
@@ -221,6 +228,16 @@ class UserScraper():
             f.write(f"Following: {user_info['following_count']}\n")
             f.write(f"Posts: {user_info['media_count']}\n")
 
+        self.save_json({
+            'username': user_info['username'],
+            'user_id': user_info['pk'],
+            'full_name': user_info['full_name'],
+            'biography': user_info['biography'],
+            'followers': user_info['follower_count'],
+            'following': user_info['following_count'],
+            'posts': user_info['media_count']
+        }, 'user_info')
+
         # Saving profile picture
         self.download_media(user_info['hd_profile_pic_url_info']['url'], 'propic.jpg')
 
@@ -273,6 +290,9 @@ class UserScraper():
         if self.debug:
             print(f"Downloading user posts for user {self.username}")
 
+        if not limit:
+            limit = 999_999_999_999
+
         # Downloading every post
         for n, post in enumerate(posts):
             if n >= limit:
@@ -299,6 +319,20 @@ class UserScraper():
                 self.loaded['posts'].append(image['id'])
                 self.save_loaded()
 
+            if not update: continue
+
+            # Saving additional data
+            self.save_json({
+                'taken_at': post['taken_at'],
+                'id': post['id'],
+                'caption': post['caption']['text'] if 'caption' in post and 'text' in post['caption'] else None,
+                'like_count': post['like_count'],
+                'reshare_count': post['comment_count'],
+                'comment_count': post['comment_count'],
+                'media_count': len(images),
+                'media_type': 'carousel' if 'carousel_media' in post else 'video' if 'video_versions' in post else 'photo'
+            }, f'posts/post_{date}/data')
+
             # Loading the caption if it exists
             if not 'caption' in post:
                 continue
@@ -318,6 +352,7 @@ class UserScraper():
 
         # Getting stories data from the API
         data = self.random_api().get_user_stories(self.user_id)
+        self.save_json(data, 'raw/stories')
         return data['reels'][str(self.user_id)]['items']
 
     def download_user_stories(self, stories=None) -> None:
@@ -339,8 +374,15 @@ class UserScraper():
             if story['id'] in self.loaded['stories']:
                 continue
 
+            date = datetime.fromtimestamp(story['taken_at']).strftime('%Y-%m-%d %Hh%Mm%Ss')
+
+            self.save_json({
+                'taken_at': story['taken_at'],
+                'id': story['id'],
+                'media_type': 'video' if 'video_versions' in story else 'photo'
+            }, f'stories/story_{date}')
+
             # Downloading the story
-            date = datetime.fromtimestamp(story['taken_at']).strftime('%Y-%m-%d %HH%MM%SS')
             if 'video_versions' in story:
                 self.download_media(story['video_versions'][0]['url'], f'stories/story_{date}.mp4')
             else:
@@ -393,7 +435,15 @@ class UserScraper():
         for highlight in highlights:
             self.add_directory(f'highlights/{highlight["title"]}')
             if self.save and not self.data_exists(f'highlights/{highlight["title"]}/data'):
-                self.save_json({'data': highlight}, f'highlights/{highlight["title"]}/data')
+                self.save_json({
+                    'title': highlight['title'],
+                    'id': highlight['id'],
+                    'items': [{
+                        'taken_at': item['taken_at'],
+                        'id': item['id'],
+                        'media_type': 'video' if 'video_versions' in item else 'photo'
+                    } for item in highlight['items']]
+                }, f'highlights/{highlight["title"]}/data')
             for story in highlight['items']:
                 # Skipping if the story was already loaded
                 if story['id'] in self.loaded['highlights']:
@@ -511,4 +561,4 @@ class UserScraper():
 
 if __name__ == '__main__':
     scraper = UserScraper('starthackclub', True, True)
-    scraper.download_user_stories()
+    scraper.download_user_info()
